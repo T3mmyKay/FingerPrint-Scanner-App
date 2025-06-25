@@ -59,6 +59,13 @@ try
         var capture = reader.Capture(Constants.Formats.Fid.ANSI, Constants.CaptureProcessing.DP_IMG_PROC_DEFAULT, captureWaitTime, reader.Capabilities.Resolutions[0]);
         Console.WriteLine($"Capture result code: {capture.ResultCode}");
         var fid = capture.Data;
+        Console.WriteLine($"fid is null: {fid == null}");
+        if (fid != null)
+        {
+            Console.WriteLine($"fid.Views.Count: {fid.Views.Count}");
+            if (fid.Views.Count > 0)
+                Console.WriteLine($"RawImage length: {fid.Views[0].RawImage?.Length}");
+        }
         if (capture.ResultCode == Constants.ResultCode.DP_SUCCESS && fid != null && fid.Views.Count > 0)
         {
             captured = true;
