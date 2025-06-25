@@ -112,7 +112,8 @@ try
                 {
                     Console.WriteLine($"Failed to extract template: {fmdResult.ResultCode}");
                 }
-                break;
+                // Exit all loops immediately after successful capture
+                goto EndCaptureLoop;
             }
         }
         if (resolutionCaptured)
@@ -123,6 +124,7 @@ try
             Console.WriteLine("Retrying...");
         }
     }
+EndCaptureLoop:
     if (!captured)
     {
         Console.WriteLine($"Failed to capture fingerprint after {maxRetries} attempts.");
