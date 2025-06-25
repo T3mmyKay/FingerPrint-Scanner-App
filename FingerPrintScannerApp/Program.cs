@@ -50,72 +50,71 @@ try
         return;
     }
 
-    Console.WriteLine("Place your finger on the scanner...");
-    var captureResult = reader.GetStatus();
-    if (captureResult != Constants.ResultCode.DP_SUCCESS)
+    int maxRetries = 3;
+    int captureWaitTime = 20000; // 20 seconds
+    bool captured = false;
+    for (int attempt = 1; attempt <= maxRetries; attempt++)
     {
-        Console.WriteLine($"Reader status error: {captureResult}");
-        reader.Dispose();
-        return;
-    }
-
-    // Capture fingerprint
-    var capture = reader.Capture(Constants.Formats.Fid.ANSI, Constants.CaptureProcessing.DP_IMG_PROC_DEFAULT, 5000, reader.Capabilities.Resolutions[0]);
-    if (capture.ResultCode != Constants.ResultCode.DP_SUCCESS)
-    {
-        Console.WriteLine($"Capture failed: {capture.ResultCode}");
-        reader.Dispose();
-        return;
-    }
-
-    // Save image using ImageSharp
-    var fid = capture.Data;
-    if (fid == null || fid.Views.Count == 0)
-    {
-        Console.WriteLine("No fingerprint data captured.");
-        reader.Dispose();
-        return;
-    }
-
-    var view = fid.Views[0];
-    string imagePath = Path.Combine(saveDir, "fingerprint.png");
-    try
-    {
-        // DPUruNet provides grayscale image data as a byte array
-        int width = view.Width;
-        int height = view.Height;
-        byte[] rawImage = view.RawImage;
-        if (rawImage == null || rawImage.Length != width * height)
+        Console.WriteLine($"Attempt {attempt} of {maxRetries}: Place your finger on the scanner...");
+        var capture = reader.Capture(Constants.Formats.Fid.ANSI, Constants.CaptureProcessing.DP_IMG_PROC_DEFAULT, captureWaitTime, reader.Capabilities.Resolutions[0]);
+        Console.WriteLine($"Capture result code: {capture.ResultCode}");
+        var fid = capture.Data;
+        if (capture.ResultCode == Constants.ResultCode.DP_SUCCESS && fid != null && fid.Views.Count > 0)
         {
-            Console.WriteLine("Invalid fingerprint image data.");
+            captured = true;
+            // Save image using ImageSharp
+            var view = fid.Views[0];
+            string imagePath = Path.Combine(saveDir, "fingerprint.png");
+            try
+            {
+                int width = view.Width;
+                int height = view.Height;
+                byte[] rawImage = view.RawImage;
+                if (rawImage == null || rawImage.Length != width * height)
+                {
+                    Console.WriteLine("Invalid fingerprint image data.");
+                }
+                else
+                {
+                    using (var image = Image.LoadPixelData<L8>(rawImage, width, height))
+                    {
+                        image.Save(imagePath, new PngEncoder());
+                    }
+                    Console.WriteLine($"Fingerprint image saved to: {imagePath}");
+                }
+            }
+            catch (Exception imgEx)
+            {
+                Console.WriteLine($"Failed to save fingerprint image: {imgEx.Message}");
+            }
+
+            // Save template (FMD)
+            var fmdResult = FeatureExtraction.CreateFmdFromFid(fid, Constants.Formats.Fmd.ANSI);
+            if (fmdResult.ResultCode == Constants.ResultCode.DP_SUCCESS)
+            {
+                string fmdPath = Path.Combine(saveDir, "fingerprint.fmd");
+                File.WriteAllBytes(fmdPath, fmdResult.Data.Bytes);
+                Console.WriteLine($"Fingerprint template saved to: {fmdPath}");
+            }
+            else
+            {
+                Console.WriteLine($"Failed to extract template: {fmdResult.ResultCode}");
+            }
+            break;
         }
         else
         {
-            using (var image = Image.LoadPixelData<L8>(rawImage, width, height))
+            Console.WriteLine("No fingerprint data captured. Please try again.");
+            if (attempt < maxRetries)
             {
-                image.Save(imagePath, new PngEncoder());
+                Console.WriteLine("Retrying...");
             }
-            Console.WriteLine($"Fingerprint image saved to: {imagePath}");
         }
     }
-    catch (Exception imgEx)
+    if (!captured)
     {
-        Console.WriteLine($"Failed to save fingerprint image: {imgEx.Message}");
+        Console.WriteLine($"Failed to capture fingerprint after {maxRetries} attempts.");
     }
-
-    // Save template (FMD)
-    var fmdResult = FeatureExtraction.CreateFmdFromFid(fid, Constants.Formats.Fmd.ANSI);
-    if (fmdResult.ResultCode == Constants.ResultCode.DP_SUCCESS)
-    {
-        string fmdPath = Path.Combine(saveDir, "fingerprint.fmd");
-        File.WriteAllBytes(fmdPath, fmdResult.Data.Bytes);
-        Console.WriteLine($"Fingerprint template saved to: {fmdPath}");
-    }
-    else
-    {
-        Console.WriteLine($"Failed to extract template: {fmdResult.ResultCode}");
-    }
-
     reader.Dispose();
     Console.WriteLine("Done.");
 }
