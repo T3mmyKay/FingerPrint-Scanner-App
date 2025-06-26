@@ -57,7 +57,8 @@ try
     {
         Console.WriteLine($"Attempt {attempt} of {maxRetries}: Place your finger on the scanner...");
         bool resolutionCaptured = false;
-        foreach (var res in reader.Capabilities.Resolutions)
+        var validResolutions = reader.Capabilities.Resolutions.Where(r => r > 0).Distinct();
+        foreach (var res in validResolutions)
         {
             Console.WriteLine($"Trying resolution: {res}");
             var capture = reader.Capture(Constants.Formats.Fid.ANSI, Constants.CaptureProcessing.DP_IMG_PROC_DEFAULT, captureWaitTime, res);
