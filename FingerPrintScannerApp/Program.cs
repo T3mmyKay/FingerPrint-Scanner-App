@@ -1,146 +1,160 @@
-﻿using Neurotec.Biometrics;
-using System;
-using System.IO;
-using System.Threading.Tasks;
-using Neurotec.Biometrics.Client;
+﻿using DPUruNet;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.PixelFormats;
+using SixLabors.ImageSharp.Formats.Png;
 
-class FingerprintApp
+Console.WriteLine("Digital Persona Fingerprint Scanner App");
+try
 {
-    private NBiometricClient _biometricClient;
-    private NSubject _subject;
-    private NFinger _subjectFinger;
-    private string saveDir;
-
-    public async Task RunAsync()
+    // Prompt for save directory
+    Console.Write("Enter directory to save fingerprint files (leave blank for Desktop): ");
+    string inputDir = Console.ReadLine();
+    string defaultDesktop = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+    string saveDir = string.IsNullOrWhiteSpace(inputDir) ? defaultDesktop : inputDir.Trim();
+    if (!Directory.Exists(saveDir))
     {
         try
         {
-            // Prompt for save directory
-            Console.Write("Enter directory to save fingerprint files (leave blank for Desktop): ");
-            string inputDir = Console.ReadLine();
-            string defaultDesktop = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
-            saveDir = string.IsNullOrWhiteSpace(inputDir) ? defaultDesktop : inputDir.Trim();
+            Directory.CreateDirectory(saveDir);
+            Console.WriteLine($"Created directory: {saveDir}");
+        }
+        catch (Exception dirEx)
+        {
+            Console.WriteLine($"Failed to create directory '{saveDir}': {dirEx.Message}");
+            return;
+        }
+    }
 
-            if (!Directory.Exists(saveDir))
+    // Detect connected readers
+    var readers = ReaderCollection.GetReaders();
+    if (readers.Count == 0)
+    {
+        Console.WriteLine("No fingerprint readers detected. Connect a Digital Persona scanner and try again.");
+        return;
+    }
+
+    Console.WriteLine($"Found {readers.Count} reader(s):");
+    for (int i = 0; i < readers.Count; i++)
+    {
+        Console.WriteLine($"[{i}] {readers[i].Description.Name}");
+    }
+
+    // Use the first reader
+    var reader = readers[0];
+    Console.WriteLine($"Using reader: {reader.Description.Name}");
+
+    var result = reader.Open(Constants.CapturePriority.DP_PRIORITY_COOPERATIVE);
+    if (result != Constants.ResultCode.DP_SUCCESS)
+    {
+        Console.WriteLine($"Failed to open reader: {result}");
+        return;
+    }
+
+    int maxRetries = 3;
+    int captureWaitTime = 20000; // 20 seconds
+    bool captured = false;
+    for (int attempt = 1; attempt <= maxRetries; attempt++)
+    {
+        Console.WriteLine($"Attempt {attempt} of {maxRetries}: Place your finger on the scanner...");
+        bool resolutionCaptured = false;
+        var validResolutions = reader.Capabilities.Resolutions.Where(r => r > 0).Distinct();
+        foreach (var res in validResolutions)
+        {
+            foreach (var format in new[] { Constants.Formats.Fid.ANSI, Constants.Formats.Fid.ISO })
             {
-                try
+                Console.WriteLine($"Trying resolution: {res}, format: {format}");
+                var capture = reader.Capture(format, Constants.CaptureProcessing.DP_IMG_PROC_DEFAULT, captureWaitTime, res);
+                Console.WriteLine($"Capture result code: {capture.ResultCode}");
+                var fid = capture.Data;
+                Console.WriteLine($"fid is null: {fid == null}");
+                if (fid != null)
                 {
-                    Directory.CreateDirectory(saveDir);
-                    Console.WriteLine($"Created directory: {saveDir}");
+                    Console.WriteLine($"fid.Views.Count: {fid.Views.Count}");
+                    if (fid.Views.Count > 0)
+                        Console.WriteLine($"RawImage length: {fid.Views[0].RawImage?.Length}");
+                    else
+                    {
+                        // Log raw data if available
+                        try
+                        {
+                            if (fid.Bytes != null)
+                            {
+                                Console.WriteLine($"fid.Bytes length: {fid.Bytes.Length}");
+                                // Print first 32 bytes as hex for inspection
+                                var preview = string.Join(" ", fid.Bytes.Take(32).Select(b => b.ToString("X2")));
+                                Console.WriteLine($"fid.Bytes (first 32 bytes): {preview}");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Error logging fid.Bytes: {ex.Message}");
+                        }
+                    }
                 }
-                catch (Exception dirEx)
-                {
-                    Console.WriteLine($"Failed to create directory '{saveDir}': {dirEx.Message}");
-                    return;
-                }
-            }
-
-            // Initialize biometric client
-            _biometricClient = new NBiometricClient();
-
-            // Detect and select Eikon Solo scanner
-            _biometricClient.FingerScanner = _biometricClient.FingerScanners.FirstOrDefault(s => s.Name.Contains("Eikon Solo"));
-            if (_biometricClient.FingerScanner == null)
-            {
-                Console.WriteLine("No Eikon Solo scanner detected. Please connect the scanner and try again.");
-                return;
-            }
-
-            Console.WriteLine($"Using scanner: {_biometricClient.FingerScanner.Name}");
-
-            int maxRetries = 3;
-            bool captured = false;
-            for (int attempt = 1; attempt <= maxRetries; attempt++)
-            {
-                Console.WriteLine($"Attempt {attempt} of {maxRetries}: Place your finger on the scanner...");
-
-                // Create a finger and set manual capture mode
-                _subjectFinger = new NFinger();
-                _subjectFinger.CaptureOptions = NBiometricCaptureOptions.Manual;
-
-                // Add finger to the subject
-                _subject = new NSubject();
-                _subject.Fingers.Add(_subjectFinger);
-
-                // Begin capturing
-                _biometricClient.FingersReturnBinarizedImage = true;
-                NBiometricTask task = _biometricClient.CreateTask(NBiometricOperations.Capture | NBiometricOperations.CreateTemplate, _subject);
-                var performedTask = await _biometricClient.PerformTaskAsync(task);
-
-                if (performedTask.Status == NBiometricStatus.Success)
+                if (capture.ResultCode == Constants.ResultCode.DP_SUCCESS && fid != null && fid.Views.Count > 0)
                 {
                     captured = true;
-
-                    // Save image
-                    var image = _subjectFinger.OriginalImage;
-                    if (image != null)
+                    resolutionCaptured = true;
+                    // Save image using ImageSharp
+                    var view = fid.Views[0];
+                    string imagePath = Path.Combine(saveDir, "fingerprint.png");
+                    try
                     {
-                        string imagePath = Path.Combine(saveDir, "fingerprint.png");
-                        try
+                        int width = view.Width;
+                        int height = view.Height;
+                        byte[] rawImage = view.RawImage;
+                        if (rawImage == null || rawImage.Length != width * height)
                         {
-                            image.Save(imagePath);
+                            Console.WriteLine("Invalid fingerprint image data.");
+                        }
+                        else
+                        {
+                            using (var image = Image.LoadPixelData<L8>(rawImage, width, height))
+                            {
+                                image.Save(imagePath, new PngEncoder());
+                            }
                             Console.WriteLine($"Fingerprint image saved to: {imagePath}");
                         }
-                        catch (Exception imgEx)
-                        {
-                            Console.WriteLine($"Failed to save fingerprint image: {imgEx.Message}");
-                        }
+                    }
+                    catch (Exception imgEx)
+                    {
+                        Console.WriteLine($"Failed to save fingerprint image: {imgEx.Message}");
+                    }
+
+                    // Save template (FMD)
+                    var fmdResult = FeatureExtraction.CreateFmdFromFid(fid, Constants.Formats.Fmd.ANSI);
+                    if (fmdResult.ResultCode == Constants.ResultCode.DP_SUCCESS)
+                    {
+                        string fmdPath = Path.Combine(saveDir, "fingerprint.fmd");
+                        File.WriteAllBytes(fmdPath, fmdResult.Data.Bytes);
+                        Console.WriteLine($"Fingerprint template saved to: {fmdPath}");
                     }
                     else
                     {
-                        Console.WriteLine("No fingerprint image captured.");
+                        Console.WriteLine($"Failed to extract template: {fmdResult.ResultCode}");
                     }
-
-                    // Save template
-                    var template = _subjectFinger.Template;
-                    if (template != null)
-                    {
-                        string templatePath = Path.Combine(saveDir, "fingerprint.fmd");
-                        try
-                        {
-                            File.WriteAllBytes(templatePath, template.Bytes);
-                            Console.WriteLine($"Fingerprint template saved to: {templatePath}");
-                        }
-                        catch (Exception fmdEx)
-                        {
-                            Console.WriteLine($"Failed to save fingerprint template: {fmdEx.Message}");
-                        }
-                    }
-                    else
-                    {
-                        Console.WriteLine("No fingerprint template extracted.");
-                    }
-
-                    break; // Exit loop on successful capture
-                }
-                else
-                {
-                    Console.WriteLine($"Capture failed: {performedTask.Status}");
-                    if (attempt < maxRetries)
-                    {
-                        Console.WriteLine("Retrying...");
-                    }
+                    // Exit all loops immediately after successful capture
+                    goto EndCaptureLoop;
                 }
             }
-
-            if (!captured)
-            {
-                Console.WriteLine($"Failed to capture fingerprint after {maxRetries} attempts.");
-            }
-
-            // Clean up
-            _biometricClient.Dispose();
-            Console.WriteLine("Done.");
         }
-        catch (Exception ex)
+        if (resolutionCaptured)
+            break;
+        Console.WriteLine("No fingerprint data captured. Please try again.");
+        if (attempt < maxRetries)
         {
-            Console.WriteLine($"Error: {ex.Message}");
+            Console.WriteLine("Retrying...");
         }
     }
-
-    static async Task Main(string[] args)
+EndCaptureLoop:
+    if (!captured)
     {
-        var app = new FingerprintApp();
-        await app.RunAsync();
+        Console.WriteLine($"Failed to capture fingerprint after {maxRetries} attempts.");
     }
+    reader.Dispose();
+    Console.WriteLine("Done.");
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"Error: {ex.Message}");
 }
